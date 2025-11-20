@@ -1,6 +1,5 @@
-version: '3.8'
-
 services:
+  # PostgreSQL for Keycloak
   keycloak_db:
     image: postgres:14
     environment:
@@ -11,6 +10,10 @@ services:
       - ./postgres-keycloak-data:/var/lib/postgresql/data
     ports:
       - "5433:5432"
+    networks:
+      - bionicpro-network
+
+  # Keycloak IAM
   keycloak:
     image: quay.io/keycloak/keycloak:21.1
     environment:
@@ -29,6 +32,69 @@ services:
       - "8080:8080"
     depends_on:
       - keycloak_db
+    networks:
+      - bionicpro-network
+
+  # OpenLDAP
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: bionicpro-ldap
+    environment:
+      LDAP_ORGANISATION: "BionicPRO"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "admin"
+      LDAP_CONFIG_PASSWORD: "config"
+      LDAP_TLS: "false"
+    command: --copy-service
+    volumes:
+      - ./ldap/config.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/config.ldif
+      - ./ldap-data:/var/lib/ldap
+      - ./ldap-config:/etc/ldap/slapd.d
+    ports:
+      - "389:389"
+      - "636:636"
+    networks:
+      - bionicpro-network
+
+  # phpLDAPadmin (Optional - for LDAP management)
+  phpldapadmin:
+    image: osixia/phpldapadmin:latest
+    container_name: bionicpro-phpldapadmin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: "openldap"
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "6443:443"
+    depends_on:
+      - openldap
+    networks:
+      - bionicpro-network
+
+  # BionicPRO Auth Service
+  bionicpro-auth:
+    build:
+      context: ./bionicpro-auth
+      dockerfile: Dockerfile
+    container_name: bionicpro-auth
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      DEBUG: "True"
+      SECRET_KEY: "change-this-in-production"
+      KEYCLOAK_URL: "http://keycloak:8080"
+      KEYCLOAK_PUBLIC_URL: "http://localhost:8080"
+      KEYCLOAK_REALM: "reports-realm"
+      KEYCLOAK_CLIENT_ID: "26d5210c879b4cb3bf91db9b0285dfe1"
+      KEYCLOAK_CLIENT_SECRET: "36243000ffc445a29e329e641836cced"
+      COOKIE_SECURE: "False"  # Set to True in production with HTTPS
+    ports:
+      - "8000:8000"
+    depends_on:
+      - keycloak
+    networks:
+      - bionicpro-network
+
+  # Frontend
   frontend:
     build:
       context: ./frontend
@@ -37,6 +103,16 @@ services:
       - "3000:3000"
     environment:
       REACT_APP_API_URL: http://localhost:8000
-      REACT_APP_KEYCLOAK_URL: http://localhost:8080
-      REACT_APP_KEYCLOAK_REALM: reports-realm
-      REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+    depends_on:
+      - bionicpro-auth
+    networks:
+      - bionicpro-network
+
+networks:
+  bionicpro-network:
+    driver: bridge
+
+volumes:
+  postgres-keycloak-data:
+  ldap-data:
+  ldap-config:
