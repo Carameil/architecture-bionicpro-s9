@@ -11,6 +11,7 @@ class SessionManager:
     def __init__(self, session_lifetime_minutes: int = 60):
         self.sessions: Dict[str, Dict[str, Any]] = {}
         self.session_lifetime = timedelta(minutes=session_lifetime_minutes)
+        self.grace_period = timedelta(seconds=30)  # 30 seconds grace period for rotated sessions
         
     def create_session(
         self, 
@@ -45,6 +46,15 @@ class SessionManager:
         if not session:
             return None
             
+        # Check if session is rotated and within grace period
+        if session.get("is_rotated"):
+            rotated_at = datetime.fromisoformat(session["rotated_at"])
+            if datetime.utcnow() - rotated_at > self.grace_period:
+                self.delete_session(session_id)
+                return None
+            # Return rotated session but don't update last_accessed
+            return session
+
         # Check if session expired
         created_at = datetime.fromisoformat(session["created_at"])
         if datetime.utcnow() - created_at > self.session_lifetime:
@@ -84,7 +94,7 @@ class SessionManager:
     ) -> Optional[str]:
         """Rotate session - create new session ID while preserving data"""
         old_session = self.get_session(old_session_id)
-        if not old_session:
+        if not old_session or old_session.get("is_rotated"):
             return None
             
         # Verify request comes from same client
@@ -96,12 +106,17 @@ class SessionManager:
         self.sessions[new_session_id] = {
             **old_session,
             "rotation_count": old_session.get("rotation_count", 0) + 1,
-            "rotated_at": datetime.utcnow().isoformat(),
-            "previous_session_id": old_session_id
+            "rotated_at": None,
+            "is_rotated": False,
+            "previous_session_id": old_session_id,
+            "created_at": datetime.utcnow().isoformat(), # Reset creation time for new session? Usually yes, or keep original? Let's keep original to enforce max absolute lifetime if needed, but here we restart timer.
+            "last_accessed": datetime.utcnow().isoformat()
         }
         
-        # Delete old session
-        self.delete_session(old_session_id)
+        # Mark old session as rotated instead of deleting
+        self.sessions[old_session_id]["is_rotated"] = True
+        self.sessions[old_session_id]["rotated_at"] = datetime.utcnow().isoformat()
+        self.sessions[old_session_id]["next_session_id"] = new_session_id
         
         return new_session_id
     
@@ -126,6 +141,14 @@ class SessionManager:
         expired_sessions = []
         
         for session_id, session in self.sessions.items():
+            # Check rotated sessions
+            if session.get("is_rotated"):
+                rotated_at = datetime.fromisoformat(session["rotated_at"])
+                if current_time - rotated_at > self.grace_period:
+                    expired_sessions.append(session_id)
+                continue
+
+            # Check normal expired sessions
             created_at = datetime.fromisoformat(session["created_at"])
             if current_time - created_at > self.session_lifetime:
                 expired_sessions.append(session_id)

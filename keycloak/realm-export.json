@@ -188,7 +188,8 @@
         "web-origins",
         "profile",
         "roles",
-        "email"
+        "email",
+        "openid"
       ],
       "optionalClientScopes": [
         "address",

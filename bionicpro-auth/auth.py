@@ -3,10 +3,31 @@ import httpx
 from typing import Dict, Optional, Any
 import logging
 from urllib.parse import urlencode
+import base64
+import json
 
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def decode_jwt_payload(token: str) -> dict:
+    """Decode JWT payload without verification (for debugging only)"""
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return {}
+        
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += '=' * padding
+        
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+    except Exception as e:
+        logger.error(f"Error decoding JWT: {e}")
+        return {}
 
 class KeycloakAuth:
     """Keycloak authentication handler"""
@@ -26,12 +47,13 @@ class KeycloakAuth:
         token_data = {
             "grant_type": "authorization_code",
             "client_id": self.config.KEYCLOAK_CLIENT_ID,
-            "client_secret": self.config.KEYCLOAK_CLIENT_SECRET,
             "code": code,
             "redirect_uri": redirect_uri
         }
         
-        # Add PKCE code verifier if provided
+        if self.config.KEYCLOAK_CLIENT_SECRET:
+            token_data["client_secret"] = self.config.KEYCLOAK_CLIENT_SECRET
+        
         if code_verifier:
             token_data["code_verifier"] = code_verifier
             
@@ -43,7 +65,14 @@ class KeycloakAuth:
             )
             response.raise_for_status()
             
-            return response.json()
+            token_response = response.json()
+            access_token = token_response.get('access_token', '')
+            if access_token:
+                payload = decode_jwt_payload(access_token)
+                logger.info(f"Token payload - iss: {payload.get('iss')}, aud: {payload.get('aud')}, scope: {payload.get('scope')}, azp: {payload.get('azp')}")
+                logger.info(f"Token payload - sub: {payload.get('sub')}, preferred_username: {payload.get('preferred_username')}")
+
+            return token_response
             
         except httpx.HTTPError as e:
             logger.error(f"Error exchanging code for tokens: {e}")
@@ -57,9 +86,11 @@ class KeycloakAuth:
         token_data = {
             "grant_type": "refresh_token",
             "client_id": self.config.KEYCLOAK_CLIENT_ID,
-            "client_secret": self.config.KEYCLOAK_CLIENT_SECRET,
             "refresh_token": refresh_token
         }
+        
+        if self.config.KEYCLOAK_CLIENT_SECRET:
+            token_data["client_secret"] = self.config.KEYCLOAK_CLIENT_SECRET
         
         try:
             response = self.client.post(
@@ -76,16 +107,33 @@ class KeycloakAuth:
             raise
     
     def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        """Get user information from Keycloak"""
+        """Get user information from JWT access token (without userinfo endpoint call)"""
         
         try:
-            response = self.client.get(
-                self.config.get_keycloak_userinfo_url(),
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            response.raise_for_status()
+            logger.info(f"Extracting user info from JWT access token")
             
-            return response.json()
+            # Decode JWT payload locally
+            payload = decode_jwt_payload(access_token)
+            
+            if not payload:
+                raise ValueError("Failed to decode JWT token")
+            
+            # Extract standard user info from JWT claims
+            user_info = {
+                "sub": payload.get("sub"),
+                "preferred_username": payload.get("preferred_username"),
+                "email": payload.get("email"),
+                "email_verified": payload.get("email_verified", False),
+                "name": payload.get("name"),
+                "given_name": payload.get("given_name"),
+                "family_name": payload.get("family_name"),
+                "realm_access": payload.get("realm_access", {}),
+                "resource_access": payload.get("resource_access", {})
+            }
+            
+            logger.info(f"User info extracted: username={user_info.get('preferred_username')}, sub={user_info.get('sub')}")
+            
+            return user_info
             
         except httpx.HTTPError as e:
             logger.error(f"Error getting user info: {e}")

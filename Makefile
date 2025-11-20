@@ -35,8 +35,16 @@ help:
 	@echo "$(YELLOW)Логи отдельных сервисов:$(NC)"
 	@echo "  make logs-keycloak    - Логи Keycloak"
 	@echo "  make logs-auth        - Логи bionicpro-auth"
+	@echo "  make logs-reports     - Логи bionicpro-reports"
 	@echo "  make logs-frontend    - Логи frontend"
 	@echo "  make logs-ldap        - Логи OpenLDAP"
+	@echo "  make logs-clickhouse  - Логи ClickHouse"
+	@echo "  make logs-airflow     - Логи Airflow"
+	@echo ""
+	@echo "$(YELLOW)Assignment 2 - Reports Service:$(NC)"
+	@echo "  make check-clickhouse - Проверить ClickHouse"
+	@echo "  make check-airflow    - Проверить Airflow"
+	@echo "  make trigger-etl      - Запустить ETL вручную"
 	@echo ""
 	@echo "$(YELLOW)Переинициализация:$(NC)"
 	@echo "  make sync-ldap        - Синхронизировать LDAP пользователей с Keycloak"
@@ -117,11 +125,14 @@ setup: build up
 	@echo "  Frontend:        http://localhost:3000"
 	@echo "  Keycloak:        http://localhost:8080"
 	@echo "  BionicPRO Auth:  http://localhost:8000"
+	@echo "  Reports API:     http://localhost:8002"
+	@echo "  ClickHouse:      http://localhost:8123"
+	@echo "  Airflow UI:      http://localhost:8081 (admin/admin)"
 	@echo "  phpLDAPadmin:    http://localhost:6443"
 
 # Проверка доступности сервисов
 check:
-	@echo "$(YELLOW)Проверка доступности сервисов...$(NC)"
+	@echo "$(YELLOW)=== Assignment 1: Auth Services ===$(NC)"
 	@echo -n "Keycloak:        "
 	@curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ | grep -q "200" && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 	@echo -n "BionicPRO Auth:  "
@@ -130,6 +141,14 @@ check:
 	@curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/ | grep -q "200" && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 	@echo -n "LDAP:            "
 	@docker exec bionicpro-ldap ldapsearch -x -D "cn=admin,dc=example,dc=com" -w admin -b "dc=example,dc=com" -H ldap://localhost > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo ""
+	@echo "$(YELLOW)=== Assignment 2: Reports & ETL ===$(NC)"
+	@echo -n "Reports API:     "
+	@curl -s -o /dev/null -w "%{http_code}" http://localhost:8002/health | grep -q "200" && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo -n "ClickHouse:      "
+	@curl -s http://localhost:8123/ping > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo -n "Airflow Web:     "
+	@curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/health | grep -q "200" && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 
 # Проверка LDAP пользователей
 check-ldap:
@@ -196,3 +215,46 @@ sync-ldap:
 	@echo "$(YELLOW)Синхронизация LDAP пользователей...$(NC)"
 	@chmod +x scripts/sync-ldap-users.sh
 	@bash scripts/sync-ldap-users.sh
+
+# Assignment 2: Reports Service Commands
+
+check-clickhouse:
+	@echo "$(YELLOW)Проверка ClickHouse...$(NC)"
+	@curl -sf http://localhost:8123/ping > /dev/null && \
+		echo "$(GREEN)ClickHouse: ✓ OK$(NC)" || \
+		echo "$(RED)ClickHouse: ✗ Недоступен$(NC)"
+	@docker exec bionicpro-clickhouse clickhouse-client --query "SELECT count() as reports FROM bionicpro.user_reports" 2>/dev/null && \
+		echo "$(GREEN)  Reports data loaded$(NC)" || true
+
+check-airflow:
+	@echo "$(YELLOW)Проверка Airflow...$(NC)"
+	@curl -sf http://localhost:8081/health > /dev/null && \
+		echo "$(GREEN)Airflow Web: ✓ OK$(NC)" || \
+		echo "$(RED)Airflow Web: ✗ Недоступен$(NC)"
+	@docker ps | grep airflow-scheduler > /dev/null && \
+		echo "$(GREEN)Airflow Scheduler: ✓ Запущен$(NC)" || \
+		echo "$(RED)Airflow Scheduler: ✗ Остановлен$(NC)"
+
+check-reports:
+	@echo "$(YELLOW)Проверка Reports API...$(NC)"
+	@curl -sf http://localhost:8002/health > /dev/null && \
+		echo "$(GREEN)Reports API: ✓ OK$(NC)" || \
+		echo "$(RED)Reports API: ✗ Недоступен$(NC)"
+
+trigger-etl:
+	@echo "$(YELLOW)Запуск ETL вручную...$(NC)"
+	@echo "Открывается Airflow UI: http://localhost:8081"
+	@echo "Логин: admin / admin"
+	@echo "Найдите DAG 'bionicpro_reports_etl' и нажмите 'Trigger DAG'"
+
+logs-reports:
+	@echo "$(YELLOW)Логи bionicpro-reports:$(NC)"
+	docker-compose logs -f bionicpro-reports
+
+logs-clickhouse:
+	@echo "$(YELLOW)Логи ClickHouse:$(NC)"
+	docker-compose logs -f clickhouse
+
+logs-airflow:
+	@echo "$(YELLOW)Логи Airflow (webserver + scheduler):$(NC)"
+	docker-compose logs -f airflow-webserver airflow-scheduler

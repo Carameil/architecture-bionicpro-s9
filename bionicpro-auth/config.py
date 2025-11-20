@@ -14,6 +14,7 @@ class Config:
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
     SESSION_LIFETIME_MINUTES: int = int(os.getenv("SESSION_LIFETIME_MINUTES", "60"))
     SESSION_ROTATION_ENABLED: bool = True
+    SESSION_ROTATION_INTERVAL_MINUTES: int = 10  # Rotate session every N minutes, not on every request
     
     # CORS settings
     CORS_ORIGINS: list = [
@@ -35,10 +36,10 @@ class Config:
     
     # Cookie settings
     COOKIE_NAME: str = "bionicpro_session"
-    COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "False").lower() == "true"
+    COOKIE_SECURE: bool = False  # Force False for local development
     COOKIE_HTTPONLY: bool = True
-    COOKIE_SAMESITE: str = "strict"
-    COOKIE_DOMAIN: Optional[str] = os.getenv("COOKIE_DOMAIN", None)
+    COOKIE_SAMESITE: str = "lax"
+    COOKIE_DOMAIN: Optional[str] = None  # Remove domain restriction for localhost
     
     # Redis settings (for future use)
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL", None)

@@ -45,6 +45,13 @@ ENV/
 postgres-keycloak-data/
 ldap-data/
 ldap-config/
+clickhouse-data/
+postgres-airflow-data/
+
+# Airflow
+airflow/logs/
+airflow/**/__pycache__/
+airflow/**/*.pyc
 
 # OS files
 .DS_Store

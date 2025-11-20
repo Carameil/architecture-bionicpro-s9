@@ -56,15 +56,32 @@ class UserInfoResponse(BaseModel):
     roles: list = []
 
 # Dependency to get current session
-async def get_current_session(request: Request) -> Optional[dict]:
-    """Get current session from cookie"""
+async def get_current_session(request: Request, response: Response = None) -> Optional[dict]:
+    """Get current session from cookie with automatic rotation handling"""
     session_id = request.cookies.get(Config.COOKIE_NAME)
     if not session_id:
+        logger.warning(f"No session cookie '{Config.COOKIE_NAME}' found in request to {request.url.path}")
         return None
     
     session = session_manager.get_session(session_id)
     if not session:
+        logger.warning(f"Session not found or expired for ID: {session_id[:10]}...")
         return None
+        
+    # Handle Grace Period: If user sent an old session ID that was recently rotated,
+    # give them the new session ID in cookie!
+    if session.get("is_rotated"):
+        logger.info(f"Request with rotated session {session_id[:10]}... (Grace Period)")
+        if "next_session_id" in session and response:
+            response.set_cookie(
+                key=Config.COOKIE_NAME,
+                value=session["next_session_id"],
+                httponly=Config.COOKIE_HTTPONLY,
+                secure=Config.COOKIE_SECURE,
+                samesite=Config.COOKIE_SAMESITE,
+                max_age=Config.SESSION_LIFETIME_MINUTES * 60
+            )
+        return session
     
     # Check if we need to refresh token
     if session_manager.is_token_expired(session_id):
@@ -83,20 +100,50 @@ async def get_current_session(request: Request) -> Optional[dict]:
             session_manager.delete_session(session_id)
             return None
     
-    # Perform session rotation if enabled
+    # Perform session rotation if enabled (but only periodically, not on every request)
     if Config.SESSION_ROTATION_ENABLED:
-        user_agent = request.headers.get("User-Agent")
-        client_ip = request.client.host if request.client else None
+        # Check if session should be rotated (based on time interval)
+        from datetime import datetime, timedelta
+        last_rotation_str = session.get("last_rotated_at") or session.get("created_at")
         
-        new_session_id = session_manager.rotate_session(
-            session_id,
-            user_agent=user_agent,
-            ip_address=client_ip
-        )
+        should_rotate = False
+        if last_rotation_str:
+            try:
+                last_rotation = datetime.fromisoformat(last_rotation_str)
+                rotation_interval = timedelta(minutes=Config.SESSION_ROTATION_INTERVAL_MINUTES)
+                if datetime.utcnow() - last_rotation >= rotation_interval:
+                    should_rotate = True
+            except:
+                should_rotate = True  # Rotate if timestamp parsing fails
+        else:
+            should_rotate = True  # Rotate if no timestamp found
         
-        if new_session_id:
-            # Update session ID in the session dict for the response
-            session["new_session_id"] = new_session_id
+        if should_rotate:
+            user_agent = request.headers.get("User-Agent")
+            client_ip = request.client.host if request.client else None
+            
+            new_session_id = session_manager.rotate_session(
+                session_id,
+                user_agent=user_agent,
+                ip_address=client_ip
+            )
+            
+            if new_session_id:
+                # Automatically set the new cookie if response is available!
+                if response:
+                    response.set_cookie(
+                        key=Config.COOKIE_NAME,
+                        value=new_session_id,
+                        httponly=Config.COOKIE_HTTPONLY,
+                        secure=Config.COOKIE_SECURE,
+                        samesite=Config.COOKIE_SAMESITE,
+                        max_age=Config.SESSION_LIFETIME_MINUTES * 60
+                    )
+                    session["new_session_id"] = new_session_id
+                    logger.info(f"Session rotated: {session_id[:10]}... -> {new_session_id[:10]}...")
+                else:
+                    # Can't set cookie without Response, skip rotation for this request
+                    logger.debug(f"Skipping session rotation (no Response object available)")
     
     return session
 
@@ -163,8 +210,8 @@ async def callback(request: CallbackRequest, response: Response, req: Request):
             httponly=Config.COOKIE_HTTPONLY,
             secure=Config.COOKIE_SECURE,
             samesite=Config.COOKIE_SAMESITE,
-            max_age=Config.SESSION_LIFETIME_MINUTES * 60,
-            domain=Config.COOKIE_DOMAIN
+            max_age=Config.SESSION_LIFETIME_MINUTES * 60
+            # domain=Config.COOKIE_DOMAIN  <- Removed to let browser handle localhost
         )
         
         return {
@@ -183,22 +230,10 @@ async def callback(request: CallbackRequest, response: Response, req: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/auth/userinfo")
-async def get_user_info(session: dict = Depends(get_current_session), response: Response = None):
+async def get_user_info(session: dict = Depends(get_current_session)):
     """Get current user information"""
     if not session:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    # Check if we need to update cookie after session rotation
-    if "new_session_id" in session:
-        response.set_cookie(
-            key=Config.COOKIE_NAME,
-            value=session["new_session_id"],
-            httponly=Config.COOKIE_HTTPONLY,
-            secure=Config.COOKIE_SECURE,
-            samesite=Config.COOKIE_SAMESITE,
-            max_age=Config.SESSION_LIFETIME_MINUTES * 60,
-            domain=Config.COOKIE_DOMAIN
-        )
     
     return UserInfoResponse(**session["user_info"])
 
@@ -232,6 +267,40 @@ async def check_auth(session: dict = Depends(get_current_session)):
         "user": session["user_info"]["preferred_username"] if session else None
     }
 
+@app.post("/api/auth/validate-session")
+async def validate_session(request: dict):
+    """
+    Validate session for internal service-to-service calls
+    Used by other services (e.g., bionicpro-reports) to validate user sessions
+    
+    Args:
+        request: {"session_id": "..."}
+    
+    Returns:
+        User info if session is valid
+    
+    Raises:
+        401 if session is invalid
+    """
+    session_id = request.get("session_id")
+    
+    if not session_id:
+        raise HTTPException(status_code=401, detail="session_id required")
+    
+    session = session_manager.get_session(session_id)
+    
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    
+    # Return user info for access control
+    return {
+        "user_id": session["user_info"].get("preferred_username"),
+        "username": session["user_info"].get("preferred_username"),
+        "email": session["user_info"].get("email"),
+        "name": session["user_info"].get("name"),
+        "authenticated": True
+    }
+
 @app.get("/api/sessions/active")
 async def get_active_sessions():
     """Get count of active sessions (for monitoring)"""
@@ -252,6 +321,55 @@ async def protected_route(session: dict = Depends(get_current_session)):
         "user": session["user_info"]["preferred_username"],
         "roles": session["user_info"].get("roles", [])
     }
+
+# Proxy endpoints for Reports API (BFF pattern)
+@app.get("/api/reports/data-availability")
+async def proxy_data_availability(session: dict = Depends(get_current_session)):
+    """Proxy data availability request to Reports API"""
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated. Session cookie required.")
+    
+    try:
+        # Call Reports API with session cookie
+        response = keycloak_auth.client.get(
+            "http://bionicpro-reports:8002/api/reports/data-availability",
+            headers={"X-User-ID": session["user_info"]["preferred_username"]}
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Error proxying to Reports API: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch data availability")
+
+@app.get("/api/reports/my-report")
+async def proxy_my_report(
+    session: dict = Depends(get_current_session),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Proxy user report request to Reports API"""
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated. Session cookie required.")
+    
+    try:
+        # Build query params
+        params = {}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        
+        # Call Reports API with user_id header
+        response = keycloak_auth.client.get(
+            "http://bionicpro-reports:8002/api/reports/my-report",
+            headers={"X-User-ID": session["user_info"]["preferred_username"]},
+            params=params
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Error proxying to Reports API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch report: {str(e)}")
 
 # Error handlers
 @app.exception_handler(HTTPException)

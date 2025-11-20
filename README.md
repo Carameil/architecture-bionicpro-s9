@@ -80,10 +80,16 @@ make restart-keycloak   # Перезапустить Keycloak
 
 После запуска `make init` доступны:
 
+**Assignment 1 (Security):**
 - **Frontend**: http://localhost:3000
 - **Keycloak**: http://localhost:8080 (admin / admin)
 - **BionicPRO Auth API**: http://localhost:8000
 - **phpLDAPadmin**: http://localhost:6443
+
+**Assignment 2 (Reports & ETL):**
+- **Airflow UI**: http://localhost:8081 (admin / admin)
+- **ClickHouse**: http://localhost:8123
+- **Reports API**: http://localhost:8002 (доступ через BFF)
 
 ## 👤 Тестовые пользователи LDAP
 
@@ -105,13 +111,20 @@ make restart-keycloak   # Перезапустить Keycloak
 
 ```
 bionicpro-s9/
-├── bionicpro-auth/     # BFF сервис (Python/FastAPI)
-├── frontend/           # React приложение с PKCE
-├── keycloak/           # Конфигурация Keycloak
-├── ldap/               # LDAP данные (config.ldif)
-├── scripts/            # Скрипты автоматической инициализации
-├── Makefile            # Команды управления
-└── docker-compose.yaml # Оркестрация сервисов
+├── bionicpro-auth/        # BFF сервис (Python/FastAPI) - Assignment 1
+├── bionicpro-reports/     # Reports API (Python/FastAPI) - Assignment 2
+├── frontend/              # React приложение с PKCE
+├── keycloak/              # Конфигурация Keycloak
+├── ldap/                  # LDAP данные (config.ldif)
+├── airflow/               # Airflow DAGs и конфигурация - Assignment 2
+│   ├── dags/              # ETL процессы
+│   └── requirements.txt   # Python зависимости для DAGs
+├── clickhouse/            # ClickHouse схемы - Assignment 2
+│   └── init/              # SQL скрипты инициализации
+├── diagrams/              # C4 диаграммы архитектуры
+├── scripts/               # Скрипты автоматической инициализации
+├── Makefile               # Команды управления
+└── docker-compose.yaml    # Оркестрация сервисов
 ```
 
 ## 🔐 Компоненты безопасности
@@ -183,7 +196,176 @@ bionicpro-s9/
 - **Frontend изменения**: `frontend/src/`
 - **LDAP конфигурация**: `ldap/config.ldif`
 - **Keycloak realm**: `keycloak/realm-export.json`
-- **Финальная конфигурация**: `keycloak/keycloak-results-export.json` (создать через `make export-realm`)
+- **Финальная конфигурация**: `keycloak/keycloak-results-export.json`
+
+---
+
+## 📊 Assignment 2: Сервис отчётов
+
+### 📋 Задача
+
+Разработать ETL-сервис для генерации отчётов о работе протезов, объединяющий данные телеметрии и CRM-системы.
+
+### 🏗️ Компоненты решения
+
+#### 1. Apache Airflow - оркестрация ETL
+- **Контейнер**: `bionicpro-airflow-webserver`, `bionicpro-airflow-scheduler`
+- **URL**: http://localhost:8081 (admin/admin)
+- **DAG**: `bionicpro_reports_etl` - ежедневный запуск
+- **Функции**:
+  - Извлечение данных из CRM DB (Oracle) и Telemetry DB (PostgreSQL)
+  - Трансформация: группировка по пользователям
+  - Загрузка в ClickHouse
+
+#### 2. ClickHouse OLAP База
+- **Контейнер**: `bionicpro-clickhouse`
+- **URL**: http://localhost:8123
+- **База**: `bionicpro`
+- **Витрина**: `user_reports` - агрегированные данные по пользователям
+- **Схема**: оптимизирована для быстрых запросов по `user_id` и `report_date`
+
+#### 3. Reports API Service
+- **Контейнер**: `bionicpro-reports`
+- **URL**: http://localhost:8002 (внутренний)
+- **Доступ через BFF**: http://localhost:8000/api/reports/...
+- **Технологии**: Python + FastAPI + clickhouse-driver
+- **Endpoints**:
+  - `GET /api/reports/data-availability` - доступные даты
+  - `GET /api/reports/my-report` - отчёты пользователя
+
+#### 4. Frontend UI
+- **Страница**: Reports Page (http://localhost:3000)
+- **Функции**:
+  - Выбор диапазона дат
+  - Кнопка "Get My Report"
+  - Визуализация метрик: движения, время отклика, батарея, ошибки
+  - Защита: данные только за обработанный период
+
+### 🔐 Безопасность и контроль доступа
+
+#### BFF Pattern (Backend for Frontend)
+```
+Frontend (localhost:3000)
+  ↓ Session Cookie (bionicpro_session)
+BFF (localhost:8000/api/reports/*)
+  ↓ Validates session, extracts user_id
+  ↓ Header: X-User-ID
+Reports API (bionicpro-reports:8002)
+  ↓ Trusts BFF (internal Docker network)
+ClickHouse (bionicpro.user_reports)
+```
+
+**Защита:**
+- ✅ Cookie не доступна JavaScript (HttpOnly)
+- ✅ Reports API доступен только через BFF
+- ✅ User ID берётся из **аутентифицированной сессии**, не из параметров
+- ✅ SQL запрос с фильтром: `WHERE user_id = '{authenticated_user_id}'`
+- ✅ Каждый пользователь видит **только свои данные**
+
+### 📸 Скриншоты решения
+
+#### [Скриншот 1: Airflow UI - DAG bionicpro_reports_etl]
+![dag.png](images/dag.png)
+
+#### [Скриншот 2: Frontend - Отчёты пользователя john.doe]
+![reports.png](images/reports.png)
+
+#### [Скриншот 3: DevTools - Проверка контроля доступа]
+![reportsForSpecificUser.png](images/reportsForSpecificUser.png)
+
+### 🧪 Проверка требований
+
+#### 1. UI-код позволяет вызвать API ✅
+```typescript
+// frontend/src/components/ReportPage.tsx
+const response = await fetch(`http://localhost:8000/api/reports/my-report?${params}`, {
+  credentials: 'include'
+});
+```
+
+#### 2. Неаутентифицированный пользователь не может генерировать отчёт ✅
+**Проверка:**
+```bash
+curl http://localhost:8000/api/reports/my-report
+# Ожидаемый результат: {"detail":"Not authenticated","status_code":401}
+```
+
+#### 3. Пользователь видит только собственный отчёт ✅
+**Реализация:**
+- User ID извлекается из **сессии BFF** (невозможно подделать)
+- Reports API получает `X-User-ID` от BFF (доверенный источник)
+- SQL запрос: `WHERE user_id = '{authenticated_user_id}'`
+
+**Проверка:**
+- john.doe → 3 отчёта (BP-12345, BionicArm Pro X1)
+- jane.smith → 2 отчёта (BP-23456, BionicHand Elite)
+- alex.johnson → 2 отчёта (BP-34567, BionicArm Pro X2)
+
+#### 4. Запросы идут в OLAP базу ✅
+```python
+# bionicpro-reports/clickhouse_client.py
+reports = ch_client.get_user_reports(user_id, start_date, end_date)
+# → SELECT * FROM bionicpro.user_reports WHERE user_id = '...'
+```
+
+#### 5. Генерация только за обработанный период ✅
+```python
+# bionicpro-reports/main.py
+latest_data_date = ch_client.get_latest_data_date()
+if end_date > latest_data_date:
+    raise HTTPException(400, detail=f"Data only available until {latest_data_date}")
+```
+
+### 📦 Артефакты Assignment 2
+
+- **Диаграмма C4**: `diagrams/BionicPro_etl_C4_t2.drawio.xml`
+- **Airflow DAG**: `airflow/dags/bionicpro_reports_etl.py`
+- **Airflow конфиг**: `airflow/requirements.txt`
+- **ClickHouse схемы**: `clickhouse/init/*.sql`
+  - `01_create_database.sql` - создание БД
+  - `02_create_user_reports_table.sql` - витрина отчётов
+  - `03_insert_test_data.sql` - тестовые данные
+- **Reports API сервис**: `bionicpro-reports/`
+  - `main.py` - FastAPI endpoints
+  - `auth.py` - контроль доступа через BFF
+  - `clickhouse_client.py` - клиент для ClickHouse
+  - `config.py` - конфигурация
+- **Frontend обновления**: `frontend/src/components/ReportPage.tsx`
+- **BFF proxy endpoints**: `bionicpro-auth/main.py` (новые endpoints для Reports API)
+
+### ✅ Выполненные задачи
+
+✅ **Задача 2.1**: Архитектура ETL решения  
+✅ **Задача 2.2**: Airflow DAG с расписанием  
+✅ **Задача 2.3**: Backend API для отчётов  
+✅ **Задача 2.4**: Контроль доступа (только свои отчёты)  
+✅ **Задача 2.5**: UI кнопка для получения отчётов
+
+### 🧪 Команды для проверки
+
+```bash
+# Проверить все сервисы (Assignment 1 + 2)
+make check
+
+# Проверить ClickHouse данные
+docker exec bionicpro-clickhouse clickhouse-client --query \
+  "SELECT user_id, count() FROM bionicpro.user_reports GROUP BY user_id ORDER BY user_id"
+# Ожидаемый результат:
+# alex.johnson  2
+# jane.smith    2
+# john.doe      3
+
+# Открыть Airflow UI
+open http://localhost:8081  # admin/admin
+
+# Проверить логи Reports API
+make logs-reports
+
+# Проверить логи Airflow
+make logs-airflow
+```
+
+---
 
 ## 🐛 Решение проблем
 
