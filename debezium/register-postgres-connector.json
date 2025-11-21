@@ -1,0 +1,47 @@
+{
+  "name": "bionicpro-crm-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    
+    "database.hostname": "postgres-crm",
+    "database.port": "5432",
+    "database.user": "crmuser",
+    "database.password": "crmpass",
+    "database.dbname": "crmdb",
+    "database.server.name": "bionicpro_crm",
+    
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_crm_slot",
+    "publication.name": "debezium_publication",
+    "publication.autocreate.mode": "filtered",
+    
+    "table.include.list": "public.customers,public.prostheses,public.orders",
+    
+    "topic.prefix": "bionicpro.crm",
+    
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false",
+    
+    "transforms": "unwrap",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.drop.tombstones": "false",
+    "transforms.unwrap.delete.handling.mode": "rewrite",
+    
+    "snapshot.mode": "initial",
+    
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.topics.prefix": "__debezium-heartbeat",
+    
+    "tombstones.on.delete": "false",
+    
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "adaptive_time_microseconds",
+    
+    "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+    "schema.history.internal.kafka.topic": "bionicpro.crm.schema-changes"
+  }
+}
+
