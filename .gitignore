@@ -45,10 +45,14 @@ ENV/
 postgres-keycloak-data/
 ldap-data/
 ldap-config/
+postgres-crm-data/
 clickhouse-data/
 postgres-airflow-data/
 minio-data/
 nginx-cache/
+zookeeper-data/
+zookeeper-logs/
+kafka-data/
 
 # Airflow
 airflow/logs/

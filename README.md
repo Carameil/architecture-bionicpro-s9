@@ -2,7 +2,7 @@
 
 ## 📋 Обзор решения
 
-Реализована полнофункциональная enterprise-платформа для управления бионическими протезами с тремя ключевыми модулями:
+Реализована полнофункциональная enterprise-платформа для управления бионическими протезами с четырьмя ключевыми модулями:
 
 ### 🔐 Assignment 1: Безопасность (Security)
 1. **PKCE (Proof Key for Code Exchange)** - защита от перехвата authorization code
@@ -24,6 +24,13 @@
 3. **Двухуровневое кеширование** - S3 (долгосрочное) + Nginx (быстрое)
 4. **Cache Invalidation** - механизм обновления кеша после ETL
 5. **Снижение нагрузки на OLAP** - до 90% запросов обслуживаются из кеша
+
+### 🔄 Assignment 4: CDC с Debezium (Real-time Data Sync)
+1. **Change Data Capture (CDC)** - отслеживание изменений через WAL
+2. **Apache Kafka** - буферизация событий изменений
+3. **Debezium Connector** - репликация PostgreSQL → Kafka
+4. **ClickHouse KafkaEngine** - потребление из Kafka в реальном времени
+5. **Разделение OLTP/OLAP** - CRM не перегружается массовыми выгрузками
 
 ## 🚀 Быстрый старт
 
@@ -111,6 +118,12 @@ make restart-keycloak   # Перезапустить Keycloak
 - **MinIO S3 API**: http://localhost:9002
 - **Nginx CDN**: http://localhost:8090
 
+**Assignment 4 (CDC with Debezium):**
+- **PostgreSQL CRM**: localhost:5434 (crmuser / crmpass)
+- **Kafka**: localhost:9092 (internal), localhost:9093 (external)
+- **Zookeeper**: localhost:2181
+- **Kafka Connect**: http://localhost:8083
+
 ## 👤 Тестовые пользователи LDAP
 
 - **john.doe** / password (роль: prothetic_user)
@@ -137,6 +150,13 @@ make restart-keycloak   # Перезапустить Keycloak
 - **CDN**: Nginx (reverse proxy + cache)
 - **S3 Client**: boto3
 
+**Assignment 4 (CDC):**
+- **Message Broker**: Apache Kafka + Zookeeper
+- **CDC Tool**: Debezium 2.5 (PostgreSQL connector)
+- **Source DB**: PostgreSQL 15 (CRM)
+- **Logical Decoding**: pgoutput plugin
+- **Stream Processing**: ClickHouse KafkaEngine + MaterializedView
+
 **Infrastructure:**
 - Docker Compose
 - Multi-stage builds
@@ -156,10 +176,20 @@ bionicpro-s9/
 ├── airflow/               # Airflow DAGs и конфигурация - Assignment 2
 │   ├── dags/              # ETL процессы
 │   └── requirements.txt   # Python зависимости для DAGs
-├── clickhouse/            # ClickHouse схемы - Assignment 2
-│   └── init/              # SQL скрипты инициализации
+├── clickhouse/            # ClickHouse схемы - Assignment 2 & 4
+│   └── init/
+│       ├── 01-03_*        # Assignment 2: user_reports, test data
+│       ├── 04_*           # Assignment 4: KafkaEngine tables
+│       └── 05_*           # Assignment 4: MaterializedViews
 ├── nginx/                 # Nginx CDN конфигурация - Assignment 3
 │   └── nginx.conf         # Reverse proxy с кешированием
+├── postgres-crm/          # CRM Database - Assignment 4
+│   └── init/
+│       ├── 01_create_crm_schema.sql
+│       └── 02_insert_test_data.sql
+├── debezium/              # Debezium Connector - Assignment 4
+│   ├── register-postgres-connector.json
+│   └── register-connector.sh
 ├── diagrams/              # C4 диаграммы архитектуры
 ├── scripts/               # Скрипты автоматической инициализации
 ├── Makefile               # Команды управления
@@ -550,6 +580,228 @@ open http://localhost:9001  # minioadmin/minioadmin
 ![cacheHit.png](images/cacheHit.png)
 
 ---
+
+## 🚀 Assignment 4: CDC с Debezium для разделения OLTP/OLAP
+
+### 📋 Задача
+
+Устранить проблему, когда массовые выгрузки данных из CRM (OLTP) базы негативно влияют на транзакционные операции. Решение: реализовать Change Data Capture (CDC) для потоковой репликации изменений в OLAP.
+
+### 🏗️ Архитектура CDC решения
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Transaction Log Tailing                      │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+    PostgreSQL CRM (OLTP)
+         │
+         │ WAL (Write-Ahead Log)
+         │ wal_level=logical
+         ↓
+    Debezium CDC Connector
+         │
+         │ Logical Decoding (pgoutput)
+         │ Replication Slot: debezium_crm_slot
+         ↓
+    Apache Kafka Topics
+         │
+         │ bionicpro.crm.public.customers
+         │ bionicpro.crm.public.prostheses
+         │ bionicpro.crm.public.orders
+         ↓
+    ClickHouse KafkaEngine
+         │
+         │ Continuous consumption
+         ↓
+    MaterializedView
+         │
+         │ Real-time JOIN with telemetry
+         ↓
+    user_reports_cdc (Data Mart)
+         ↓
+    Reports API
+         ↓
+    Frontend
+```
+
+**Преимущества:**
+- ✅ **Нулевая нагрузка на CRM OLTP** - Airflow больше не делает массовые SELECT
+- ✅ **Real-time репликация** - изменения доступны в OLAP за секунды
+- ✅ **Масштабируемость** - Kafka буферизует нагрузку
+- ✅ **Надежность** - гарантия доставки каждого изменения (at-least-once)
+
+### 🔧 Компоненты решения
+
+#### 1. PostgreSQL CRM (Source Database)
+- **Контейнер**: `bionicpro-postgres-crm`
+- **Порт**: 5434 (внешний), 5432 (внутренний)
+- **Пользователь**: crmuser / crmpass
+- **БД**: crmdb
+- **Конфигурация WAL**:
+  - `wal_level=logical` - включает logical decoding
+  - `max_wal_senders=10` - поддержка репликации
+  - `max_replication_slots=10` - слоты для Debezium
+- **Таблицы**:
+  - `customers` - данные клиентов
+  - `prostheses` - информация о протезах
+  - `orders` - заказы/транзакции
+- **REPLICA IDENTITY**: FULL (все колонки в UPDATE/DELETE events)
+
+#### 2. Apache Kafka (Message Broker)
+- **Контейнер**: `bionicpro-kafka`
+- **Порты**: 9092 (internal), 9093 (external)
+- **Zookeeper**: `bionicpro-zookeeper` на порту 2181
+- **Topics** (auto-created by Debezium):
+  - `bionicpro.crm.public.customers`
+  - `bionicpro.crm.public.prostheses`
+  - `bionicpro.crm.public.orders`
+  - `__debezium-heartbeat.bionicpro_crm` - healthcheck
+  - `bionicpro.crm.schema-changes` - DDL history
+
+#### 3. Kafka Connect + Debezium
+- **Контейнер**: `bionicpro-kafka-connect` (Debezium 2.5)
+- **Порт**: 8083 (REST API)
+- **Connector**: `bionicpro-crm-connector`
+- **Plugin**: `pgoutput` (PostgreSQL 10+ native logical decoding)
+- **Snapshot mode**: `initial` (полный снимок при первом запуске)
+- **Конфигурация**: `debezium/register-postgres-connector.json`
+- **Регистрация**:
+  ```bash
+  make register-debezium
+  ```
+
+#### 4. ClickHouse KafkaEngine Tables
+- **Файл**: `clickhouse/init/04_create_kafka_tables.sql`
+- **Kafka Source Tables**:
+  - `bionicpro.customers_kafka` → читает из Kafka topic
+  - `bionicpro.prostheses_kafka`
+  - `bionicpro.orders_kafka`
+- **Target Storage Tables** (MergeTree):
+  - `bionicpro.customers` - persistent storage
+  - `bionicpro.prostheses`
+  - `bionicpro.orders`
+- **Engine**: `ReplacingMergeTree` (автоматическая дедупликация)
+
+#### 5. MaterializedView (Real-time ETL)
+- **Файл**: `clickhouse/init/05_create_materialized_views.sql`
+- **Функция**: Автоматический перенос данных из Kafka в MergeTree
+- **MaterializedViews**:
+  - `customers_mv`: Kafka → customers
+  - `prostheses_mv`: Kafka → prostheses
+  - `orders_mv`: Kafka → orders
+  - `user_reports_enriched_mv`: JOIN CRM + telemetry → `user_reports_cdc`
+
+#### 6. Updated Reports API
+- **Изменение**: `bionicpro-reports/clickhouse_client.py`
+- **Новая таблица**: `user_reports_cdc` (вместо `user_reports`)
+- **Данные**: Real-time обновления из CRM через CDC + telemetry
+- **Query**: `SELECT ... FROM user_reports_cdc FINAL`
+
+### 🔄 Data Flow (от изменения до Reports API)
+
+```
+1. User updates customer info in CRM
+   ↓
+2. PostgreSQL writes to WAL (wal_level=logical)
+   ↓
+3. Debezium reads WAL via replication slot
+   ↓ (~100ms)
+4. Debezium publishes to Kafka topic
+   ↓
+5. ClickHouse KafkaEngine consumes message
+   ↓ (~1s)
+6. MaterializedView writes to MergeTree
+   ↓
+7. Reports API queries updated data
+   ↓
+8. Frontend shows fresh data (< 2s latency!)
+```
+
+### 🚀 Автоматическая инициализация
+
+**`make init` выполняет полную инициализацию всех компонентов Assignment 4:**
+
+```bash
+make init
+
+# Шаги выполняемые автоматически:
+# Step 1/5: Waiting for services (включая Kafka, Kafka Connect, PostgreSQL CRM)
+# Step 2/5: Initializing LDAP
+# Step 3/5: Checking Keycloak
+# Step 4/5: Initializing ClickHouse CDC tables (04_*.sql, 05_*.sql)
+# Step 5/5: Registering Debezium connector
+```
+
+### 🧪 Команды для проверки
+
+```bash
+# Проверить все сервисы (включая Assignment 4)
+make check
+
+# Проверить статус Debezium connector
+make check-debezium
+# Ожидаемый результат: "state": "RUNNING"
+
+# Проверить PostgreSQL CRM
+make check-postgres-crm
+# Ожидаемый результат: 3 customers
+
+# Проверить репликацию данных в ClickHouse
+docker exec bionicpro-clickhouse clickhouse-client --query \
+  "SELECT 'customers' as table_name, count() as count FROM bionicpro.customers 
+   UNION ALL SELECT 'prostheses', count() FROM bionicpro.prostheses
+   UNION ALL SELECT 'orders', count() FROM bionicpro.orders"
+# Ожидаемый результат: по 3 записи в каждой таблице (реплицировано из CRM)
+
+# Тестирование CDC в реальном времени
+# 1. Вставить новую запись в CRM
+docker exec bionicpro-postgres-crm psql -U crmuser -d crmdb -c \
+  "INSERT INTO public.customers (username, full_name, email) 
+   VALUES ('new.user', 'New User', 'new@example.com');"
+
+# 2. Подождать 5-10 секунд и проверить ClickHouse
+sleep 10
+docker exec bionicpro-clickhouse clickhouse-client --query \
+  "SELECT count() FROM bionicpro.customers WHERE username='new.user'"
+# Ожидаемый результат: 1 (запись реплицировалась!)
+
+# Посмотреть логи
+make logs-kafka-connect  # Debezium CDC logs
+make logs-postgres-crm   # CRM database logs
+make logs-kafka          # Kafka broker logs
+```
+
+### 📦 Артефакты Assignment 4
+
+- **docker-compose.yaml**: Kafka, Zookeeper, Kafka Connect, PostgreSQL CRM
+- **debezium/register-postgres-connector.json**: Debezium configuration
+- **debezium/register-connector.sh**: Registration script
+- **postgres-crm/init/*.sql**: CRM schema and test data
+- **clickhouse/init/04_create_kafka_tables.sql**: KafkaEngine tables
+- **clickhouse/init/05_create_materialized_views.sql**: MaterializedViews
+- **bionicpro-reports/clickhouse_client.py**: Updated to use `user_reports_cdc`
+- **scripts/init-clickhouse-cdc.sh**: Автоматическая инициализация CDC таблиц
+- **scripts/wait-for-services.sh**: Ожидание Kafka, Kafka Connect, PostgreSQL CRM
+
+---
+
+### 📸 Скриншоты Assignment 4
+
+#### [Скриншот 1: Debezium Connector Status - RUNNING]
+![debeziumCheck.png](images/debeziumCheck.png)
+---
+
+#### [Скриншот 2: CDC в действии - Репликация данных]
+![cdc-replication.png](images/cdc-replication.png)
+---
+
+#### [Скриншот 3: Kafka Topics и ClickHouse таблицы CDC]
+![kafkaClickCdc.png](images/kafkaClickCdc.png)
+---
+
+#### [Скриншот 4: Reports API использует CDC витрину]
+![reportsApiCdc.png](images/reportsApiCdc.png)
 
 ## 🐛 Решение проблем
 

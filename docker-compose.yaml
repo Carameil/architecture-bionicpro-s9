@@ -138,6 +138,37 @@ services:
     networks:
       - bionicpro-network
 
+  # PostgreSQL CRM Database - Assignment 4 (source for CDC)
+  postgres-crm:
+    image: postgres:15-alpine
+    container_name: bionicpro-postgres-crm
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: crmuser
+      POSTGRES_PASSWORD: crmpass
+      POSTGRES_DB: crmdb
+      # Enable logical decoding for Debezium CDC
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.utf8"
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+    volumes:
+      - postgres-crm-data:/var/lib/postgresql/data
+      - ./postgres-crm/init:/docker-entrypoint-initdb.d
+    networks:
+      - bionicpro-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crmuser -d crmdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ClickHouse OLAP Database
   clickhouse:
     image: clickhouse/clickhouse-server:23.8
@@ -302,6 +333,84 @@ services:
       timeout: 10s
       retries: 3
 
+  # Zookeeper - Assignment 4 (required for Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: bionicpro-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - bionicpro-network
+
+  # Kafka - Assignment 4 (message broker for CDC)
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: bionicpro-kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      - zookeeper
+    networks:
+      - bionicpro-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Kafka Connect with Debezium - Assignment 4 (CDC connector)
+  kafka-connect:
+    image: debezium/connect:2.5
+    container_name: bionicpro-kafka-connect
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: "debezium-connect-cluster"
+      CONFIG_STORAGE_TOPIC: "debezium_connect_configs"
+      OFFSET_STORAGE_TOPIC: "debezium_connect_offsets"
+      STATUS_STORAGE_TOPIC: "debezium_connect_statuses"
+      # Single node cluster
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Connect to PostgreSQL CRM
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    volumes:
+      - ./debezium:/debezium-config
+    depends_on:
+      - kafka
+      - postgres-crm
+    networks:
+      - bionicpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
 networks:
   bionicpro-network:
     driver: bridge
@@ -310,8 +419,12 @@ volumes:
   postgres-keycloak-data:
   ldap-data:
   ldap-config:
+  postgres-crm-data:
   clickhouse-data:
   postgres-airflow-data:
   airflow-logs:
   minio-data:
   nginx-cache:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:

@@ -53,5 +53,53 @@ if [ $attempt -eq $max_attempts ]; then
     exit 1
 fi
 
+# Wait for ClickHouse (Assignment 2)
+echo "Waiting for ClickHouse..."
+max_attempts=30
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
+    if docker exec bionicpro-clickhouse clickhouse-client --query "SELECT 1" > /dev/null 2>&1; then
+        echo "✓ ClickHouse is ready"
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+done
+
+# Wait for Airflow (Assignment 2)
+wait_for_http "http://localhost:8081/health" "Airflow"
+
+# Wait for Reports API (Assignment 2)
+wait_for_http "http://localhost:8002/health" "Reports API"
+
+# Wait for PostgreSQL CRM (Assignment 4)
+echo "Waiting for PostgreSQL CRM..."
+max_attempts=30
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
+    if docker exec bionicpro-postgres-crm pg_isready -U crmuser -d crmdb > /dev/null 2>&1; then
+        echo "✓ PostgreSQL CRM is ready"
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+done
+
+# Wait for Kafka (Assignment 4)
+echo "Waiting for Kafka..."
+max_attempts=30
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
+    if docker exec bionicpro-kafka kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1; then
+        echo "✓ Kafka is ready"
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+done
+
+# Wait for Kafka Connect (Assignment 4)
+wait_for_http "http://localhost:8083/" "Kafka Connect"
+
 echo "✅ All services are ready!"
 

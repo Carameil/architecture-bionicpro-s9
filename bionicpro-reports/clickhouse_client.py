@@ -39,9 +39,12 @@ class ClickHouseClient:
         Returns:
             List of report dictionaries
         """
+        # Assignment 4: Query from CDC-powered data mart (user_reports_cdc)
+        # This table is continuously updated via Debezium CDC → Kafka → ClickHouse MaterializedView
         query = """
-            SELECT 
+            SELECT
                 user_id,
+                username,
                 report_date,
                 prosthesis_id,
                 total_movements,
@@ -56,8 +59,8 @@ class ClickHouseClient:
                 customer_email,
                 prosthesis_model,
                 prosthesis_manufacture_date,
-                etl_updated_at
-            FROM user_reports_latest
+                _updated_at as etl_updated_at
+            FROM user_reports_cdc FINAL
             WHERE user_id = %(user_id)s
         """
         
@@ -104,10 +107,12 @@ class ClickHouseClient:
         """
         Get the latest date for which data is available
         
+        Assignment 4: Query from CDC-powered data mart
+        
         Returns:
             Latest report_date or None if no data
         """
-        query = "SELECT max(report_date) as latest_date FROM user_reports"
+        query = "SELECT max(report_date) as latest_date FROM user_reports_cdc"
         
         try:
             result = self.client.execute(query)

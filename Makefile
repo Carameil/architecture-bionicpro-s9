@@ -50,6 +50,13 @@ help:
 	@echo "  make check-s3         - Проверить MinIO (S3)"
 	@echo "  make check-cdn        - Проверить Nginx CDN"
 	@echo ""
+	@echo "$(YELLOW)Assignment 4 - CDC with Debezium:$(NC)"
+	@echo "  make check-kafka      - Проверить Kafka"
+	@echo "  make check-kafka-connect - Проверить Kafka Connect"
+	@echo "  make check-postgres-crm - Проверить PostgreSQL CRM"
+	@echo "  make register-debezium - Зарегистрировать Debezium connector"
+	@echo "  make check-debezium   - Проверить статус Debezium connector"
+	@echo ""
 	@echo "$(YELLOW)Переинициализация:$(NC)"
 	@echo "  make sync-ldap        - Синхронизировать LDAP пользователей с Keycloak"
 	@echo "  make reinit-ldap      - Перезагрузить данные LDAP"
@@ -159,6 +166,14 @@ check:
 	@curl -s http://localhost:9002/minio/health/live > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 	@echo -n "Nginx CDN:       "
 	@curl -s http://localhost:8090/health > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo ""
+	@echo "$(YELLOW)=== Assignment 4: CDC with Debezium ===$(NC)"
+	@echo -n "PostgreSQL CRM:  "
+	@docker exec bionicpro-postgres-crm pg_isready -U crmuser -d crmdb > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo -n "Kafka:           "
+	@docker exec bionicpro-kafka kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo -n "Kafka Connect:   "
+	@curl -s http://localhost:8083/ > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 
 # Проверка LDAP пользователей
 check-ldap:
@@ -290,3 +305,49 @@ logs-minio:
 logs-nginx:
 	@echo "$(YELLOW)Логи Nginx CDN:$(NC)"
 	docker-compose logs -f nginx-cdn
+
+# Assignment 4: CDC with Debezium Commands
+
+check-kafka:
+	@echo "$(YELLOW)Проверка Kafka...$(NC)"
+	@docker exec bionicpro-kafka kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1 && \
+		echo "$(GREEN)Kafka: ✓ OK$(NC)" || \
+		echo "$(RED)Kafka: ✗ Недоступен$(NC)"
+
+check-kafka-connect:
+	@echo "$(YELLOW)Проверка Kafka Connect...$(NC)"
+	@curl -sf http://localhost:8083/ > /dev/null && \
+		echo "$(GREEN)Kafka Connect: ✓ OK$(NC)" || \
+		echo "$(RED)Kafka Connect: ✗ Недоступен$(NC)"
+
+check-postgres-crm:
+	@echo "$(YELLOW)Проверка PostgreSQL CRM...$(NC)"
+	@docker exec bionicpro-postgres-crm pg_isready -U crmuser -d crmdb > /dev/null 2>&1 && \
+		echo "$(GREEN)PostgreSQL CRM: ✓ OK$(NC)" || \
+		echo "$(RED)PostgreSQL CRM: ✗ Недоступен$(NC)"
+	@docker exec bionicpro-postgres-crm psql -U crmuser -d crmdb -c "SELECT COUNT(*) FROM customers" 2>/dev/null && \
+		echo "$(GREEN)  CRM data loaded$(NC)" || true
+
+register-debezium:
+	@echo "$(YELLOW)Регистрация Debezium connector...$(NC)"
+	@chmod +x debezium/register-connector.sh
+	@bash debezium/register-connector.sh
+
+check-debezium:
+	@echo "$(YELLOW)Проверка Debezium connector...$(NC)"
+	@curl -sf http://localhost:8083/connectors/bionicpro-crm-connector/status > /dev/null && \
+		echo "$(GREEN)Debezium Connector: ✓ Зарегистрирован$(NC)" || \
+		echo "$(RED)Debezium Connector: ✗ Не найден$(NC)"
+	@curl -s http://localhost:8083/connectors/bionicpro-crm-connector/status 2>/dev/null | python3 -m json.tool || true
+
+logs-kafka:
+	@echo "$(YELLOW)Логи Kafka:$(NC)"
+	docker-compose logs -f kafka
+
+logs-kafka-connect:
+	@echo "$(YELLOW)Логи Kafka Connect:$(NC)"
+	docker-compose logs -f kafka-connect
+
+logs-postgres-crm:
+	@echo "$(YELLOW)Логи PostgreSQL CRM:$(NC)"
+	docker-compose logs -f postgres-crm
