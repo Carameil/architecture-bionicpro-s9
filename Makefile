@@ -46,6 +46,10 @@ help:
 	@echo "  make check-airflow    - Проверить Airflow"
 	@echo "  make trigger-etl      - Запустить ETL вручную"
 	@echo ""
+	@echo "$(YELLOW)Assignment 3 - S3 & CDN Caching:$(NC)"
+	@echo "  make check-s3         - Проверить MinIO (S3)"
+	@echo "  make check-cdn        - Проверить Nginx CDN"
+	@echo ""
 	@echo "$(YELLOW)Переинициализация:$(NC)"
 	@echo "  make sync-ldap        - Синхронизировать LDAP пользователей с Keycloak"
 	@echo "  make reinit-ldap      - Перезагрузить данные LDAP"
@@ -149,6 +153,12 @@ check:
 	@curl -s http://localhost:8123/ping > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 	@echo -n "Airflow Web:     "
 	@curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/health | grep -q "200" && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo ""
+	@echo "$(YELLOW)=== Assignment 3: S3 & CDN ===$(NC)"
+	@echo -n "MinIO (S3):      "
+	@curl -s http://localhost:9002/minio/health/live > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
+	@echo -n "Nginx CDN:       "
+	@curl -s http://localhost:8090/health > /dev/null 2>&1 && echo "$(GREEN)✓ OK$(NC)" || echo "$(RED)✗ Недоступен$(NC)"
 
 # Проверка LDAP пользователей
 check-ldap:
@@ -258,3 +268,25 @@ logs-clickhouse:
 logs-airflow:
 	@echo "$(YELLOW)Логи Airflow (webserver + scheduler):$(NC)"
 	docker-compose logs -f airflow-webserver airflow-scheduler
+
+# Assignment 3: S3 & CDN Commands
+
+check-s3:
+	@echo "$(YELLOW)Проверка MinIO (S3)...$(NC)"
+	@curl -sf http://localhost:9002/minio/health/live > /dev/null && \
+		echo "$(GREEN)MinIO: ✓ OK$(NC)" || \
+		echo "$(RED)MinIO: ✗ Недоступен$(NC)"
+
+check-cdn:
+	@echo "$(YELLOW)Проверка Nginx CDN...$(NC)"
+	@curl -sf http://localhost:8090/health > /dev/null && \
+		echo "$(GREEN)Nginx CDN: ✓ OK$(NC)" || \
+		echo "$(RED)Nginx CDN: ✗ Недоступен$(NC)"
+
+logs-minio:
+	@echo "$(YELLOW)Логи MinIO:$(NC)"
+	docker-compose logs -f minio
+
+logs-nginx:
+	@echo "$(YELLOW)Логи Nginx CDN:$(NC)"
+	docker-compose logs -f nginx-cdn

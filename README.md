@@ -1,14 +1,29 @@
-# BionicPRO - Повышение безопасности системы
+# BionicPRO - Enterprise-Ready Архитектура
 
 ## 📋 Обзор решения
 
-Реализовано комплексное решение для устранения уязвимостей системы BionicPRO:
+Реализована полнофункциональная enterprise-платформа для управления бионическими протезами с тремя ключевыми модулями:
 
+### 🔐 Assignment 1: Безопасность (Security)
 1. **PKCE (Proof Key for Code Exchange)** - защита от перехвата authorization code
 2. **Backend for Frontend (BFF)** - токены изолированы от фронтенда
 3. **LDAP Federation** - поддержка пользователей из разных стран
 4. **MFA через OTP** - обязательная двухфакторная аутентификация
 5. **Яндекс ID** - интеграция внешнего IdP
+
+### 📊 Assignment 2: Отчёты и ETL (Reports & Analytics)
+1. **Apache Airflow** - оркестрация ETL процессов по расписанию
+2. **ClickHouse OLAP** - аналитическая БД для отчётов
+3. **Reports API** - REST API с контролем доступа
+4. **Data Mart** - агрегация телеметрии протезов и CRM данных
+5. **Frontend Integration** - UI для генерации отчётов
+
+### ⚡ Assignment 3: Кеширование и CDN (Performance)
+1. **MinIO (S3)** - объектное хранилище для отчётов
+2. **Nginx CDN** - reverse proxy с кешированием
+3. **Двухуровневое кеширование** - S3 (долгосрочное) + Nginx (быстрое)
+4. **Cache Invalidation** - механизм обновления кеша после ETL
+5. **Снижение нагрузки на OLAP** - до 90% запросов обслуживаются из кеша
 
 ## 🚀 Быстрый старт
 
@@ -91,6 +106,11 @@ make restart-keycloak   # Перезапустить Keycloak
 - **ClickHouse**: http://localhost:8123
 - **Reports API**: http://localhost:8002 (доступ через BFF)
 
+**Assignment 3 (S3 & CDN):**
+- **MinIO Console**: http://localhost:9001 (minioadmin / minioadmin)
+- **MinIO S3 API**: http://localhost:9002
+- **Nginx CDN**: http://localhost:8090
+
 ## 👤 Тестовые пользователи LDAP
 
 - **john.doe** / password (роль: prothetic_user)
@@ -101,18 +121,35 @@ make restart-keycloak   # Перезапустить Keycloak
 
 ## 🏗️ Технологический стек
 
-- **Frontend**: React + TypeScript
-- **Backend**: Python (FastAPI)
-- **IAM**: Keycloak
-- **LDAP**: OpenLDAP
-- **Infrastructure**: Docker Compose
+**Assignment 1 (Security):**
+- **Frontend**: React + TypeScript + PKCE
+- **Backend (BFF)**: Python (FastAPI)
+- **IAM**: Keycloak + OpenLDAP Federation
+- **MFA**: OTP (Google Authenticator / FreeOTP)
+
+**Assignment 2 (Reports & ETL):**
+- **ETL**: Apache Airflow
+- **OLAP DB**: ClickHouse
+- **Reports API**: Python (FastAPI)
+
+**Assignment 3 (Caching):**
+- **Object Storage**: MinIO (S3-compatible)
+- **CDN**: Nginx (reverse proxy + cache)
+- **S3 Client**: boto3
+
+**Infrastructure:**
+- Docker Compose
+- Multi-stage builds
 
 ## 📁 Структура проекта
 
 ```
 bionicpro-s9/
 ├── bionicpro-auth/        # BFF сервис (Python/FastAPI) - Assignment 1
-├── bionicpro-reports/     # Reports API (Python/FastAPI) - Assignment 2
+├── bionicpro-reports/     # Reports API (Python/FastAPI) - Assignment 2 & 3
+│   ├── s3_client.py       # Клиент для MinIO/S3 - Assignment 3
+│   ├── main.py            # API endpoints с S3 кешированием
+│   └── ...
 ├── frontend/              # React приложение с PKCE
 ├── keycloak/              # Конфигурация Keycloak
 ├── ldap/                  # LDAP данные (config.ldif)
@@ -121,6 +158,8 @@ bionicpro-s9/
 │   └── requirements.txt   # Python зависимости для DAGs
 ├── clickhouse/            # ClickHouse схемы - Assignment 2
 │   └── init/              # SQL скрипты инициализации
+├── nginx/                 # Nginx CDN конфигурация - Assignment 3
+│   └── nginx.conf         # Reverse proxy с кешированием
 ├── diagrams/              # C4 диаграммы архитектуры
 ├── scripts/               # Скрипты автоматической инициализации
 ├── Makefile               # Команды управления
@@ -341,29 +380,174 @@ if end_date > latest_data_date:
 ✅ **Задача 2.4**: Контроль доступа (только свои отчёты)  
 ✅ **Задача 2.5**: UI кнопка для получения отчётов
 
+---
+
+## 🚀 Assignment 3: Снижение нагрузки через S3 и CDN
+
+### 📋 Задача
+
+Снизить нагрузку на ClickHouse OLAP базу за счет кеширования сгенерированных отчётов в S3 и раздачи через CDN.
+
+### 🏗️ Архитектура кеширования
+
+```
+User Request
+  ↓
+Reports API (bionicpro-reports)
+  ↓
+  ├──> Check S3 (MinIO)
+  │     ├─ Cache HIT  → Return CDN URL ✅ (быстро!)
+  │     └─ Cache MISS → ↓
+  │
+  ├──> Query ClickHouse (OLAP) ⏱️
+  │     ↓
+  ├──> Save to S3
+  │     ↓
+  └──> Return CDN URL
+        ↓
+Nginx CDN (Reverse Proxy + Cache)
+  ↓
+MinIO (S3 Object Storage)
+```
+
+### 🔧 Компоненты решения
+
+#### 1. MinIO (S3-compatible storage)
+- **Контейнер**: `bionicpro-minio`
+- **API**: http://localhost:9002 (внешний порт, внутри контейнера 9000)
+- **Console**: http://localhost:9001 (minioadmin/minioadmin)
+- **Bucket**: `bionicpro-reports`
+- **Структура хранения**:
+  ```
+  reports/{user_id}/{year}/{month}/report_{start}_{end}.json
+  ```
+
+#### 2. Nginx CDN (Reverse Proxy с кешированием)
+- **Контейнер**: `bionicpro-nginx-cdn`
+- **URL**: http://localhost:8090
+- **Функции**:
+  - Reverse proxy к MinIO
+  - Кеширование статических файлов (60 минут)
+  - Заголовок `X-Cache-Status` для отладки
+  - CORS для frontend
+- **Конфигурация**: `nginx/nginx.conf`
+
+#### 3. Reports API с S3 логикой
+**Обновлен**: `bionicpro-reports/`
+
+**Новые файлы:**
+- `s3_client.py` - клиент для работы с MinIO/S3
+- Обновлен `main.py` - логика кеширования
+- Обновлен `config.py` - S3 и CDN настройки
+
+**Логика работы:**
+```python
+# 1. Проверка кеша
+cached = s3_cache.get_cached_report(user_id, start, end)
+if cached:
+    return {"cdn_url": "...", "cached": True}
+
+# 2. Генерация из ClickHouse
+reports = ch_client.get_user_reports(user_id, start, end)
+
+# 3. Сохранение в S3
+s3_key = s3_cache.save_report(user_id, start, end, reports)
+cdn_url = s3_cache.get_cdn_url(s3_key)
+
+# 4. Возврат CDN URL
+return {"cdn_url": cdn_url, "cached": False}
+```
+
+### 🔄 Механизм обновления кеша
+
+#### Двухуровневое кеширование
+
+**Уровень 1: S3 (MinIO)** - долгосрочное хранилище отчётов  
+**Уровень 2: Nginx CDN** - быстрый кеш для раздачи
+
+#### Инвалидация при обновлении данных
+
+**Когда инвалидировать:**
+- После запуска Airflow DAG (новые данные в ClickHouse)
+- По расписанию (ежедневно после ETL)
+- Вручную через API
+
+**Методы инвалидации:**
+
+1. **Удаление из S3 (Python API):**
+   ```python
+   # Полная инвалидация пользователя
+   s3_cache.invalidate_user_reports(user_id="john.doe")
+   
+   # Инвалидация конкретного месяца
+   s3_cache.invalidate_user_reports(user_id="john.doe", date_prefix="2025-11")
+   ```
+
+2. **Автоматическая инвалидация Nginx CDN (TTL):**
+   - `proxy_cache_valid 200 60m` - кеш живет 60 минут
+   - После ETL (02:00) старые данные истекают к 03:00
+   - Следующий запрос получит обновленные данные из S3
+
+3. **Ручная очистка Nginx кеша (если нужно):**
+   ```bash
+   # Войти в контейнер и очистить кеш
+   docker exec -it bionicpro-nginx-cdn sh -c "rm -rf /var/cache/nginx/*"
+   
+   # Перезагрузить Nginx
+   docker-compose restart nginx-cdn
+   ```
+
+#### Стратегия обновления после ETL
+
+```
+02:00 - Airflow DAG запускается
+02:30 - Новые данные в ClickHouse
+02:31 - Python script удаляет старые отчёты из S3
+       └─> s3_cache.invalidate_user_reports() для всех пользователей
+03:00 - Nginx кеш истекает (60 мин TTL)
+03:01 - Первый запрос пользователя:
+       ├─> S3 cache MISS (удалён в 02:31)
+       ├─> Генерация из ClickHouse (новые данные!)
+       ├─> Сохранение в S3
+       └─> Кеширование в Nginx CDN
+```
+
 ### 🧪 Команды для проверки
 
 ```bash
-# Проверить все сервисы (Assignment 1 + 2)
+# Проверить все сервисы
 make check
 
-# Проверить ClickHouse данные
-docker exec bionicpro-clickhouse clickhouse-client --query \
-  "SELECT user_id, count() FROM bionicpro.user_reports GROUP BY user_id ORDER BY user_id"
-# Ожидаемый результат:
-# alex.johnson  2
-# jane.smith    2
-# john.doe      3
+# Проверить MinIO
+curl http://localhost:9002/minio/health/live
 
-# Открыть Airflow UI
-open http://localhost:8081  # admin/admin
+# Проверить Nginx CDN
+curl http://localhost:8090/health
 
-# Проверить логи Reports API
-make logs-reports
+# Открыть MinIO Console
+open http://localhost:9001  # minioadmin/minioadmin
 
-# Проверить логи Airflow
-make logs-airflow
+# Посмотреть кешированные файлы в S3
+# В MinIO Console → Buckets → bionicpro-reports → reports/
 ```
+
+### 📦 Артефакты Assignment 3
+
+- **Nginx конфигурация**: `nginx/nginx.conf`
+- **S3 клиент**: `bionicpro-reports/s3_client.py`
+- **Обновлен Reports API**: `bionicpro-reports/main.py`
+- **docker-compose**: MinIO и Nginx сервисы добавлены
+
+---
+
+### 📸 Скриншоты Assignment 3
+
+#### [Скриншот 1: MinIO Console - Структура хранения отчётов в S3]
+![MinioReport.png](images/MinioReport.png)
+
+#### [Скриншот 2: DevTools - Cache HIT (второй запрос)]
+![img.png](images/cacheMiss.png)
+![cacheHit.png](images/cacheHit.png)
 
 ---
 
@@ -401,12 +585,3 @@ docker-compose ps
 # Перезапустить всё
 make restart
 ```
-
-## ✅ Достигнутые улучшения безопасности
-
-- ✅ Токены недоступны для JavaScript (защита от XSS)
-- ✅ PKCE защищает от MITM атак
-- ✅ Сессии привязаны к IP и User-Agent
-- ✅ Ротация сессий (защита от session fixation)
-- ✅ MFA обязательна
-- ✅ Федерация через LDAP

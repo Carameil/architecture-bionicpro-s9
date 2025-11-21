@@ -14,6 +14,7 @@ import logging
 from config import settings
 from auth import get_current_user, User
 from clickhouse_client import get_clickhouse_client, ClickHouseClient
+from s3_client import get_s3_cache, S3ReportCache
 
 # Configure logging
 logging.basicConfig(
@@ -54,25 +55,18 @@ async def get_my_report(
     start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
     current_user: User = Depends(get_current_user),
-    ch_client: ClickHouseClient = Depends(get_clickhouse_client)
+    ch_client: ClickHouseClient = Depends(get_clickhouse_client),
+    s3_cache: S3ReportCache = Depends(get_s3_cache)
 ):
     """
-    Get authenticated user's prosthesis reports
+    Get authenticated user's prosthesis reports with S3 caching and CDN
     
-    This endpoint:
-    1. Validates user session via BFF
-    2. Retrieves ONLY the authenticated user's data (access control)
-    3. Returns reports from ClickHouse OLAP database
-    4. Ensures data is only from processed ETL periods
+    Flow (Assignment 3 - Caching):
+    1. Check S3 cache for report
+    2. If found -> return CDN URL (cache HIT)
+    3. If not found -> generate from ClickHouse, save to S3, return CDN URL (cache MISS)
     
-    Args:
-        start_date: Optional filter - start date
-        end_date: Optional filter - end date
-        current_user: Injected by authentication dependency
-        ch_client: ClickHouse client dependency
-        
-    Returns:
-        JSON with user reports and metadata
+    This reduces load on ClickHouse OLAP database.
     """
     logger.info(f"Report request from user: {current_user.username}")
     
@@ -106,11 +100,30 @@ async def get_my_report(
     if not end_date:
         end_date = latest_data_date
     
-    # Query ClickHouse - CRITICAL: use user_id from authenticated session
-    # This ensures users can ONLY see their own reports
+    # Convert dates to strings for S3 keys
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
+    
+    # Assignment 3: Check S3 cache first
+    if settings.S3_ENABLED:
+        cached_report = s3_cache.get_cached_report(current_user.user_id, start_str, end_str)
+        if cached_report:
+            # Cache HIT - return CDN URL
+            s3_key = s3_cache._get_report_key(current_user.user_id, start_str, end_str)
+            cdn_url = s3_cache.get_cdn_url(s3_key)
+            
+            logger.info(f"Returning cached report from CDN: {cdn_url}")
+            return {
+                **cached_report,
+                "cached": True,
+                "cdn_url": cdn_url,
+                "source": "s3_cache"
+            }
+    
+    # Cache MISS or S3 disabled - query ClickHouse
     try:
         reports = ch_client.get_user_reports(
-            user_id=current_user.user_id,  # ← Access control enforcement
+            user_id=current_user.user_id,
             start_date=start_date,
             end_date=end_date
         )
@@ -121,18 +134,33 @@ async def get_my_report(
             detail="Error retrieving reports from database"
         )
     
-    # Return response
-    return {
+    # Build response
+    response_data = {
         "user_id": current_user.user_id,
         "username": current_user.username,
         "date_range": {
-            "start": start_date.isoformat(),
-            "end": end_date.isoformat()
+            "start": start_str,
+            "end": end_str
         },
         "data_available_until": latest_data_date.isoformat(),
         "total_reports": len(reports),
-        "reports": reports
+        "reports": reports,
+        "cached": False,
+        "source": "clickhouse"
     }
+    
+    # Assignment 3: Save to S3 cache
+    if settings.S3_ENABLED:
+        try:
+            s3_key = s3_cache.save_report(current_user.user_id, start_str, end_str, response_data)
+            cdn_url = s3_cache.get_cdn_url(s3_key)
+            response_data["cdn_url"] = cdn_url
+            logger.info(f"Report cached to S3 and available via CDN: {cdn_url}")
+        except Exception as e:
+            logger.error(f"Failed to cache report to S3: {e}")
+            # Continue without caching (degraded mode)
+    
+    return response_data
 
 
 @app.get("/api/reports/data-availability")

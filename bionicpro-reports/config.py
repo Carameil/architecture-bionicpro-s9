@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     BFF_URL: str = os.getenv("BFF_URL", "http://bionicpro-auth:8000")
     BFF_VALIDATE_SESSION_ENDPOINT: str = "/api/auth/validate-session"
     
+    # S3 (MinIO) settings - Assignment 3
+    S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "http://minio:9000")
+    S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "minioadmin")
+    S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "minioadmin")
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "bionicpro-reports")
+    S3_ENABLED: bool = os.getenv("S3_ENABLED", "True").lower() == "true"
+    
+    # CDN settings - Assignment 3
+    CDN_BASE_URL: str = os.getenv("CDN_BASE_URL", "http://localhost:8090")
+    
     # CORS settings
     CORS_ORIGINS: list = ["http://localhost:3000", "http://localhost:8000"]
     

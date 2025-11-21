@@ -47,6 +47,8 @@ ldap-data/
 ldap-config/
 clickhouse-data/
 postgres-airflow-data/
+minio-data/
+nginx-cache/
 
 # Airflow
 airflow/logs/
